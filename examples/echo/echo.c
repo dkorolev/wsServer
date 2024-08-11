@@ -18,6 +18,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <pthread.h>
 #include <unistd.h>
 #include <ws.h>
 
@@ -34,6 +35,16 @@
  */
 
 /**
+ * @brief To demonstrate the use of server and client contexts.
+ */
+static int base_pointer_to_suppress_warning;
+struct counter_with_mutex
+{
+	pthread_mutex_t mutex;
+	int *pointer_ahead_of_base_pointer;
+};
+
+/**
  * @brief Called when a client connects to the server.
  *
  * @param client Client connection. The @p client parameter is used
@@ -43,6 +54,11 @@
 void onopen(ws_cli_conn_t *client)
 {
 	char *cli, *port;
+	struct counter_with_mutex* server_context = ws_get_server_context(client);
+	pthread_mutex_lock(&server_context->mutex);
+	++server_context->pointer_ahead_of_base_pointer;
+	ws_set_connection_context(client, server_context->pointer_ahead_of_base_pointer);
+	pthread_mutex_unlock(&server_context->mutex);
 	cli  = ws_getaddress(client);
 	port = ws_getport(client);
 #ifndef DISABLE_VERBOSE
@@ -84,10 +100,12 @@ void onmessage(ws_cli_conn_t *client,
 	const unsigned char *msg, uint64_t size, int type)
 {
 	char *cli;
+	int my_counter_value;
 	cli = ws_getaddress(client);
+	my_counter_value = ((int*)ws_get_connection_context(client)) - &base_pointer_to_suppress_warning;
 #ifndef DISABLE_VERBOSE
-	printf("I receive a message: %s (size: %" PRId64 ", type: %d), from: %s\n",
-		msg, size, type, cli);
+	printf("I (client index %d) receive a message: %s (size: %" PRId64 ", type: %d), from: %s\n",
+		my_counter_value, msg, size, type, cli);
 #endif
 
 	/**
@@ -116,6 +134,9 @@ void onmessage(ws_cli_conn_t *client,
  */
 int main(void)
 {
+	struct counter_with_mutex counter;
+	pthread_mutex_init(&counter.mutex, NULL);
+	counter.pointer_ahead_of_base_pointer = &base_pointer_to_suppress_warning;
 	ws_socket(&(struct ws_server){
 		/*
 		 * Bind host:
@@ -129,7 +150,8 @@ int main(void)
 		.timeout_ms    = 1000,
 		.evs.onopen    = &onopen,
 		.evs.onclose   = &onclose,
-		.evs.onmessage = &onmessage
+		.evs.onmessage = &onmessage,
+		.context       = &counter
 	});
 
 	/*
